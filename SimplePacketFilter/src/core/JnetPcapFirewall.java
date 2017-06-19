@@ -1,15 +1,23 @@
 package core;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
-import org.jnetpcap.Pcap;
+import org.jnetpcap.Pcap; //libcap
 import org.jnetpcap.PcapBpfProgram;
 import org.jnetpcap.PcapIf;
+import org.jnetpcap.nio.JMemory;
+import org.jnetpcap.packet.JFlow;
+import org.jnetpcap.packet.JFlowKey;
+import org.jnetpcap.packet.JPacket;
+import org.jnetpcap.packet.JPacketHandler;
+import org.jnetpcap.packet.JScanner;
 import org.jnetpcap.packet.PcapPacket;
-import org.jnetpcap.packet.PcapPacketHandler;
 import org.jnetpcap.packet.format.FormatUtils;
 import org.jnetpcap.protocol.network.Ip4;
+import org.jnetpcap.protocol.tcpip.Http;
 import org.jnetpcap.protocol.tcpip.Tcp;
 
 public class JnetPcapFirewall {
@@ -31,12 +39,12 @@ public class JnetPcapFirewall {
         /* Displaying the devices */
         System.out.println("Network devices:");  
         
-        int i = 0;  
+        int devices = 0;  
         for (PcapIf device : nicDevices) {  
             String description =  
                 (device.getDescription() != null) ? device.getDescription()  
                     : "No description available";  
-            System.out.printf("#%d: %s [%s]\n", i++, device.getName(), description);  
+            System.out.printf("#%d: %s [%s]\n", devices++, device.getName(), description);  
         } 
         
 		/*
@@ -81,7 +89,7 @@ public class JnetPcapFirewall {
          */
         
         PcapBpfProgram program = new PcapBpfProgram(); 
-        String expression = "tcp port http"; 
+        String expression = "host www.orkut.com"; 
         int optimize = 0;         // 0 = false 
         int netmask = 0xFFFFFF00; // 255.255.255.0 
          
@@ -106,49 +114,107 @@ public class JnetPcapFirewall {
          * 
          */
         
-        PcapPacketHandler<String> jpacketHandler = new PcapPacketHandler<String>() {
+        pcap.loop(Pcap.LOOP_INFINITE, new JPacketHandler<StringBuilder>() { 
+        	   final Ip4 ip = new Ip4();
+        	   final Tcp tcp = new Tcp(); 
+        	 
+        	   /*
+        	    * Same thing for our http header 
+        	    */ 
+        	   final Http http = new Http(); 
 
-            final Ip4 ip = new Ip4();
-            Tcp tcp = new Tcp();
-            public void nextPacket(PcapPacket packet, String user) {
-            	try {
-					Thread.sleep(2000); // Setting a delay of 2 seconds
+        	   public void nextPacket(JPacket packet, StringBuilder errbuf) { 
+        		
+        		try {
+					Thread.sleep(3000); //Adding a delay of 3 secs
 				} catch (InterruptedException e) {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
-            	//Inspecting the packet headers
-                if(packet.hasHeader(Ip4.ID) && packet.hasHeader(Tcp.ID) ){
-                    packet.getHeader(ip);
-                    byte[] dIP = new byte[4], sIP = new byte[4];
-                    dIP = packet.getHeader(ip).destination();
-                    sIP = packet.getHeader(ip).source();
-                    String tcpSrc = "" + packet.getHeader(tcp).destination();//Get the source port
-                    String tcpDest = "" + packet.getHeader(tcp).destination();//Get the destination port
-                    String sourceIP = FormatUtils.ip(sIP);
-                    String destinationIP = FormatUtils.ip(dIP);
+        		 
 
-                    System.out.printf("tcp.ip_src=%s%n",sourceIP);
-                    System.out.printf("tcp.ip_dest=%s%n",destinationIP);
-                    System.out.printf("tcp.ip_src_port=%s%n",tcpSrc);
-                    System.out.printf("tcp.ip_dest_port=%s%n",tcpDest);
-                    System.out.println("-------------------------------------");
-                }
+        	    if (packet.hasHeader(tcp)) { 
+        	    	 byte[] dIP = new byte[4], sIP = new byte[4];
+            	     packet.getHeader(tcp); 
+            	     dIP = packet.getHeader(ip).destination();
+                     sIP = packet.getHeader(ip).source();
+                     String sourceIP = FormatUtils.ip(sIP);
+                     String destinationIP = FormatUtils.ip(dIP);
+                     System.out.printf("tcp.ip_src=%s%n",sourceIP);
+                     System.out.printf("tcp.ip_dest=%s%n",destinationIP);
+            	     System.out.printf("tcp:destination port=%d%n", tcp.destination()); 
+            	     System.out.printf("tcp.source port=%d%n", tcp.source()); 
+            	     System.out.printf("tcp.acknowledgement=%x%n", tcp.ack()); 	
+        	     System.out.printf("tcp header::%s%n", tcp.toString()); 
+        	    } 
 
-            }
-        }; 
-        
-        /*
-         * 
-         * Calling the packet reading loop
-         * This loop is configured to collect 10 packets (can be changed)
-         * 
-         */
-        
-          pcap.loop(20, jpacketHandler, "");
-          
-          /* Done, and closing the pcap object */
-          pcap.close(); 
+        	    if (packet.hasHeader(tcp) && packet.hasHeader(http)) { 
+
+        	 
+        	     System.out.printf("http header::%s%n", http); 
+
+        	 
+        	    } 
+        	 
+        	    System.out.printf("frame #%d%n", packet.getFrameNumber()); 
+        	   } 
+        	 
+        	  }, genericErrBuffer); 
+
+        	  JScanner.getThreadLocal().setFrameNumber(0); 
+        	 
+        	  final PcapPacket packet = new PcapPacket(JMemory.POINTER); 
+        	  final Tcp tcp = new Tcp(); 
+        	 
+        	  for (int i = 0; i < 5; i++) { 
+        	   pcap.nextEx(packet); 
+        	 
+        	   if (packet.hasHeader(tcp)) { 
+        	    System.out.printf("#%d seq=%08X%n", packet.getFrameNumber(), tcp.seq()); 
+        	   } 
+        	  } 
+        	 
+
+        	  final Map<JFlowKey, JFlow> flows = new HashMap<JFlowKey, JFlow>(); 
+        	 
+        	  for (int i = 0; i < 50; i++) { 
+        	   pcap.nextEx(packet); 
+        	   final JFlowKey key = packet.getState().getFlowKey(); 
+        	 
+        	   JFlow flow = flows.get(key); 
+        	   if (flow == null) { 
+        	    flows.put(key, flow = new JFlow(key)); 
+        	   } 
+        	 
+
+        	   flow.add(new PcapPacket(packet)); 
+        	  } 
+        	 
+
+        	 
+        	  for (JFlow flow : flows.values()) { 
+        	 
+        	 
+        	   if (flow.isReversable()) { 
+
+        	    List<JPacket> forward = flow.getForward(); 
+        	    for (JPacket p : forward) { 
+        	     System.out.printf("%d, ", p.getFrameNumber()); 
+        	    } 
+        	    System.out.println(); 
+        	 
+        	    List<JPacket> reverse = flow.getReverse(); 
+        	    for (JPacket p : reverse) { 
+        	     System.out.printf("%d, ", p.getFrameNumber()); 
+        	    } 
+        	   } else { 
+
+        	    for (JPacket p : flow.getAll()) { 
+        	     System.out.printf("%d, ", p.getFrameNumber()); 
+        	    } 
+        	   } 
+        	   System.out.println(); 
+        	  } 
 	}
 
 }
