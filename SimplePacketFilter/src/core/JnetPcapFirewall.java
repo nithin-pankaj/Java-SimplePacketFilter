@@ -1,21 +1,16 @@
 package core;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+
 
 import org.jnetpcap.Pcap; //libcap
 import org.jnetpcap.PcapBpfProgram;
 import org.jnetpcap.PcapIf;
-import org.jnetpcap.nio.JMemory;
-import org.jnetpcap.packet.JFlow;
-import org.jnetpcap.packet.JFlowKey;
 import org.jnetpcap.packet.JPacket;
 import org.jnetpcap.packet.JPacketHandler;
-import org.jnetpcap.packet.JScanner;
-import org.jnetpcap.packet.PcapPacket;
 import org.jnetpcap.packet.format.FormatUtils;
+import org.jnetpcap.protocol.network.Icmp;
 import org.jnetpcap.protocol.network.Ip4;
 import org.jnetpcap.protocol.tcpip.Http;
 import org.jnetpcap.protocol.tcpip.Tcp;
@@ -85,11 +80,18 @@ public class JnetPcapFirewall {
          * Following block ('PcapBpfProgram') is used to set a filter for packet listening
          * you can use a configuration file to read out the filtering expression
          * By default i'm only allowing https connections and filtering out all other packets (non-https)
-         * 
+         * plus, i have commented certain filters. If you want to test any other filters, uncomment that expression and comment out others
          */
         
         PcapBpfProgram program = new PcapBpfProgram(); 
-        String expression = "host www.orkut.com"; 
+        //String expression = "src host not 10.206.157.24"; //Filter based on source ip address
+        //String expression = "dst host not 10.206.157.24"; //Filter based on dest ip address
+        //String expression = "ip proto tcp"; //based on protocol
+        //String expression = "tcp port 443"; // port based
+        String expression = "tcp port https"; // Only allow http packets
+        //String expression = "tcp port http"; // Only allow http packets
+        //String expression = "host 10.206.157.24"; // Only allow packets arriving from SAP servers 10.206.159.155
+        //String expression = "tcp port 80 and (((ip[2:2] - ((ip[0]&0xf)<<2)) - ((tcp[12]&0xf0)>>2)) != 0)"; //Allow packets taht contain data
         int optimize = 0;         // 0 = false 
         int netmask = 0xFFFFFF00; // 255.255.255.0 
          
@@ -113,10 +115,12 @@ public class JnetPcapFirewall {
          * We are using the libcap fucntion to receive and read packets
          * 
          */
-        
-        pcap.loop(Pcap.LOOP_INFINITE, new JPacketHandler<StringBuilder>() { 
+        //we can also use PcapPacketHandler
+        pcap.loop(20, new JPacketHandler<StringBuilder>() { 
         	   final Ip4 ip = new Ip4();
         	   final Tcp tcp = new Tcp(); 
+        	   Icmp icmp = new Icmp(); // Need an instance so we can check on sub header 
+        	   Icmp.DestinationUnreachable unreach = new Icmp.DestinationUnreachable(); 
         	 
         	   /*
         	    * Same thing for our http header 
@@ -131,6 +135,17 @@ public class JnetPcapFirewall {
 					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
+        		
+        		if (packet.hasHeader(ip)){
+        			byte[] dIP = new byte[4], sIP = new byte[4];
+        			packet.getHeader(ip); 
+        			dIP = packet.getHeader(ip).destination();
+                    sIP = packet.getHeader(ip).source();
+                    String sourceIP = FormatUtils.ip(sIP);
+                    String destinationIP = FormatUtils.ip(dIP);
+                    System.out.printf("Source IP=%s%n",sourceIP);
+                    System.out.printf("Destination Ip=%s%n",destinationIP);
+        		}
         		 
 
         	    if (packet.hasHeader(tcp)) { 
@@ -155,66 +170,18 @@ public class JnetPcapFirewall {
 
         	 
         	    } 
+        	    
+        	    if (packet.hasHeader(icmp) && icmp.hasSubHeader(unreach)) { 
+        	    	 
+        	    	   System.out.printf("type=%d, code=%d, crc=0x%x reserved=%d\n", 
+        	    	       icmp.type(), icmp.code(), icmp.checksum(), unreach.reserved()); 
+        	    } 
         	 
         	    System.out.printf("frame #%d%n", packet.getFrameNumber()); 
         	   } 
         	 
         	  }, genericErrBuffer); 
-
-        	  JScanner.getThreadLocal().setFrameNumber(0); 
-        	 
-        	  final PcapPacket packet = new PcapPacket(JMemory.POINTER); 
-        	  final Tcp tcp = new Tcp(); 
-        	 
-        	  for (int i = 0; i < 5; i++) { 
-        	   pcap.nextEx(packet); 
-        	 
-        	   if (packet.hasHeader(tcp)) { 
-        	    System.out.printf("#%d seq=%08X%n", packet.getFrameNumber(), tcp.seq()); 
-        	   } 
-        	  } 
-        	 
-
-        	  final Map<JFlowKey, JFlow> flows = new HashMap<JFlowKey, JFlow>(); 
-        	 
-        	  for (int i = 0; i < 50; i++) { 
-        	   pcap.nextEx(packet); 
-        	   final JFlowKey key = packet.getState().getFlowKey(); 
-        	 
-        	   JFlow flow = flows.get(key); 
-        	   if (flow == null) { 
-        	    flows.put(key, flow = new JFlow(key)); 
-        	   } 
-        	 
-
-        	   flow.add(new PcapPacket(packet)); 
-        	  } 
-        	 
-
-        	 
-        	  for (JFlow flow : flows.values()) { 
-        	 
-        	 
-        	   if (flow.isReversable()) { 
-
-        	    List<JPacket> forward = flow.getForward(); 
-        	    for (JPacket p : forward) { 
-        	     System.out.printf("%d, ", p.getFrameNumber()); 
-        	    } 
-        	    System.out.println(); 
-        	 
-        	    List<JPacket> reverse = flow.getReverse(); 
-        	    for (JPacket p : reverse) { 
-        	     System.out.printf("%d, ", p.getFrameNumber()); 
-        	    } 
-        	   } else { 
-
-        	    for (JPacket p : flow.getAll()) { 
-        	     System.out.printf("%d, ", p.getFrameNumber()); 
-        	    } 
-        	   } 
-        	   System.out.println(); 
-        	  } 
+       
 	}
 
 }
